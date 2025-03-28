@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import math
 
 def load_image(image_path):
     """Wczytaj obraz i konwertuj z BGR (OpenCV) na RGB (PIL)"""
@@ -33,7 +34,6 @@ def improved_edge_detection(img, use_alternative=False):
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
             cv2.THRESH_BINARY, 11, 2
         )
-        
         edges = cv2.Canny(
             thresh, 
             threshold1=cv2.mean(gray)[0] * 0.5, 
@@ -46,7 +46,6 @@ def improved_edge_detection(img, use_alternative=False):
     
     kernel = np.ones((3,3), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=2)
-    
     return edges
 
 def advanced_document_contour(edges, img_area):
@@ -64,72 +63,112 @@ def advanced_document_contour(edges, img_area):
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
         
         if (len(approx) == 4 and 
-            area > img_area * 0.1 and 
-            area < img_area * 0.95 and 
+            area > img_area * 0.20 and
+            area < img_area * 0.97 and
             cv2.isContourConvex(approx)):
             document_contours.append(approx)
     
-    return max(document_contours, key=cv2.contourArea) if document_contours else None
+    if document_contours:
+        return max(document_contours, key=cv2.contourArea)
+    return None
 
-def fallback_full_image_processing(img):
-    """Przetwarzanie gdy nie znaleziono konturu - pełny obraz"""
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    gray = cv2.equalizeHist(gray)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    rows = np.where(~np.all(binary == 255, axis=1))[0]
-    cols = np.where(~np.all(binary == 255, axis=0))[0]
-    
-    if len(rows) > 0 and len(cols) > 0:
-        cropped = img[rows.min():rows.max()+1, cols.min():cols.max()+1]
-        return cropped
-    
-    return img
-
-def correct_perspective(img, contour):
-    """Skoryguj perspektywę dokumentu (prostowanie)"""
-    pts = contour.reshape(4, 2)
+def order_points(pts):
+    """Porządkuj punkty: top-left, top-right, bottom-right, bottom-left"""
+    # inicjalizacja listy współrzędnych w kolejności: top-left, top-right, bottom-right, bottom-left
     rect = np.zeros((4, 2), dtype="float32")
-    
+
+    # top-left będzie mieć najmniejszą sumę, bottom-right największą sumę
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]
     rect[2] = pts[np.argmax(s)]
-    
+
+    # top-right będzie mieć najmniejszą różnicę, bottom-left największą różnicę
     diff = np.diff(pts, axis=1)
     rect[1] = pts[np.argmin(diff)]
     rect[3] = pts[np.argmax(diff)]
-    
+
+    return rect
+
+def four_point_transform(image, pts):
+    """Transformacja perspektywy czteropunktowa"""
+    # Porządkowanie punktów
+    rect = order_points(pts)
     (tl, tr, br, bl) = rect
-    width = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
-    height = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
-    
+
+    # Obliczenie szerokości dokumentu
+    widthA = np.linalg.norm(br - bl)
+    widthB = np.linalg.norm(tr - tl)
+    max_width = max(int(widthA), int(widthB))
+
+    # Obliczenie wysokości dokumentu
+    heightA = np.linalg.norm(tr - br)
+    heightB = np.linalg.norm(tl - bl)
+    max_height = max(int(heightA), int(heightB))
+
+    # Zdefiniowanie docelowych punktów
     dst = np.array([
         [0, 0],
-        [width - 1, 0],
-        [width - 1, height - 1],
-        [0, height - 1]
-    ], dtype="float32")
-    
+        [max_width - 1, 0],
+        [max_width - 1, max_height - 1],
+        [0, max_height - 1]], dtype="float32")
+
+    # Obliczenie macierzy transformacji i zastosowanie
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(img, M, (int(width), int(height)))
+    warped = cv2.warpPerspective(image, M, (max_width, max_height))
+
     return warped
 
-def scale_to_dpi(image, target_dpi=300):
-    """Skaluj obraz do zadanej rozdzielczości DPI"""
-    # Domyślnie zakładamy 96 DPI dla obrazów
-    original_dpi = 96
-    scale_factor = target_dpi / original_dpi
+def estimate_capital_height(image):
+    """Oszacuj wysokość wielkich liter w obrazie"""
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    new_width = int(image.shape[1] * scale_factor)
-    new_height = int(image.shape[0] * scale_factor)
+    heights = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if h > 5 and w > 5:
+            heights.append(h)
     
-    scaled_image = cv2.resize(
-        image, 
-        (new_width, new_height), 
-        interpolation=cv2.INTER_LANCZOS4
-    )
+    return np.median(heights) if len(heights) > 0 else 30
+
+def correct_perspective(img, target_capital_height=30):
+    """Skoryguj perspektywę dokumentu"""
+    # Usuń cień
+    no_shadow_image = remove_shadow(img)
     
-    return scaled_image
+    # Wyszukaj krawędzie dokumentu
+    edges = improved_edge_detection(no_shadow_image)
+    
+    try:
+        # Próba znalezienia konturu dokumentu
+        img_area = img.shape[0] * img.shape[1]
+        contour = advanced_document_contour(edges, img_area)
+        
+        if contour is not None:
+            # Spłaszcz kontur do punktów
+            perimeter = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            
+            # Jeśli znaleziono cztery punkty
+            if len(approx) == 4:
+                # Transformacja perspektywy
+                warped = four_point_transform(no_shadow_image, approx.reshape(4, 2))
+                
+                # Przeskaluj do optymalnej wysokości wielkich liter
+                current_height = estimate_capital_height(warped)
+                scale_factor = target_capital_height / current_height
+                
+                new_width = int(warped.shape[1] * scale_factor)
+                new_height = int(warped.shape[0] * scale_factor)
+                
+                return cv2.resize(warped, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    except Exception as e:
+        print(f"Błąd podczas korekcji perspektywy: {e}")
+    
+    # Jeśli nie udało się przetworzyć, zwróć oryginalny obraz
+    return img
 
 def process_document(input_path, output_path):
     """Główna funkcja przetwarzania dokumentu"""
@@ -137,41 +176,28 @@ def process_document(input_path, output_path):
         # 1. Wczytaj obraz
         original_image = load_image(input_path)
         
-        # Oblicz całkowity obszar obrazu
-        img_area = original_image.shape[0] * original_image.shape[1]
+        # 2. Korekta perspektywy
+        final_image = correct_perspective(original_image)
         
-        # 2. Usuń cień
-        no_shadow_image = remove_shadow(original_image)
-        
-        # 3. Wykryj krawędzie i kontur dokumentu
-        edged_image = improved_edge_detection(no_shadow_image)
-        contour = advanced_document_contour(edged_image, img_area)
-        
-        if contour is not None:
-            # 4. Korekta perspektywy (jeśli znaleziono kontur)
-            warped_image = correct_perspective(no_shadow_image, contour)
-            final_image = warped_image
-        else:
-            # Próba alternatywnego wykrywania krawędzi
-            edged_image_alt = improved_edge_detection(no_shadow_image, use_alternative=True)
-            contour_alt = advanced_document_contour(edged_image_alt, img_area)
-            
-            if contour_alt is not None:
-                warped_image = correct_perspective(no_shadow_image, contour_alt)
-                final_image = warped_image
-            else:
-                # Fallback - przetwarzanie całego obrazu
-                print("Nie znaleziono konturu dokumentu. Stosuję przetwarzanie pełnego obrazu.")
-                final_image = fallback_full_image_processing(no_shadow_image)
-        
-        # 5. Skalowanie do 300 DPI
-        final_image_scaled = scale_to_dpi(final_image)
-        
-        # Zapisz
-        Image.fromarray(final_image_scaled).save(output_path, quality=95)
+        # 3. Zapisz wynik
+        Image.fromarray(final_image).save(output_path, quality=95)
         print(f"Zapisano przetworzony obraz jako: {output_path}")
         
-        return final_image_scaled
+        # Opcjonalnie: porównaj obrazy
+        plt.figure(figsize=(12, 6))
+        plt.subplot(1, 2, 1)
+        plt.imshow(original_image)
+        plt.title("Oryginał")
+        plt.axis('off')
+        
+        plt.subplot(1, 2, 2)
+        plt.imshow(final_image)
+        plt.title("Przetworzony")
+        plt.axis('off')
+        
+        plt.show()
+        
+        return final_image
     
     except Exception as e:
         print(f"Błąd: {e}")

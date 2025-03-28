@@ -75,5 +75,5 @@ def compare_ocr_results(input_path, output_file="ocr_results.txt"):
         f.write(processed_text_preprocessed + "\n")
 
 if __name__ == "__main__":
-    input_path = "doc2.jpg"
+    input_path = "doc11.jpg"
     compare_ocr_results(input_path)
