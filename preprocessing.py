@@ -24,14 +24,10 @@ def remove_shadow(img):
 
 def improved_edge_detection(img, use_alternative=False):
     """Zaawansowane wykrywanie krawędzi dokumentu"""
-    # Konwersja do skali szarości
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    
-    # Redukcja szumów
     gray = cv2.bilateralFilter(gray, 11, 17, 17)
     
     if not use_alternative:
-        # Standardowe podejście
         thresh = cv2.adaptiveThreshold(
             gray, 255, 
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
@@ -44,16 +40,10 @@ def improved_edge_detection(img, use_alternative=False):
             threshold2=cv2.mean(gray)[0] * 1.5
         )
     else:
-        # Alternatywne podejście dla trudnych przypadków
-        # Wyrównanie histogramu
         gray = cv2.equalizeHist(gray)
-        
-        # Progowanie Otsu
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
         edges = cv2.Canny(gray, 10, 250)
     
-    # Dylatacja krawędzi dla połączenia przerw
     kernel = np.ones((3,3), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=2)
     
@@ -61,53 +51,36 @@ def improved_edge_detection(img, use_alternative=False):
 
 def advanced_document_contour(edges, img_area):
     """Zaawansowane znajdowanie konturu dokumentu"""
-    # Znajdź kontury
     contours, _ = cv2.findContours(
         edges, 
         cv2.RETR_LIST, 
         cv2.CHAIN_APPROX_SIMPLE
     )
     
-    # Filtrowanie konturów
     document_contours = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
         
-        # Zaawansowane kryteria dla dokumentu:
-        # - około 4 wierzchołki
-        # - znaczący obszar (nie za mały, nie za duży)
-        # - prawie prostokątny
         if (len(approx) == 4 and 
-            area > img_area * 0.1 and  # min 10% obszaru obrazu
-            area < img_area * 0.95 and  # max 95% obszaru obrazu
+            area > img_area * 0.1 and 
+            area < img_area * 0.95 and 
             cv2.isContourConvex(approx)):
             document_contours.append(approx)
     
-    # Wybierz kontur najbardziej przypominający prostokąt
-    if document_contours:
-        return max(document_contours, key=cv2.contourArea)
-    
-    return None
+    return max(document_contours, key=cv2.contourArea) if document_contours else None
 
 def fallback_full_image_processing(img):
     """Przetwarzanie gdy nie znaleziono konturu - pełny obraz"""
-    # Konwersja do skali szarości
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    
-    # Wyrównanie histogramu
     gray = cv2.equalizeHist(gray)
-    
-    # Binaryzacja Otsu
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Znajdź marginesy
     rows = np.where(~np.all(binary == 255, axis=1))[0]
     cols = np.where(~np.all(binary == 255, axis=0))[0]
     
     if len(rows) > 0 and len(cols) > 0:
-        # Przytnij do granic dokumentu
         cropped = img[rows.min():rows.max()+1, cols.min():cols.max()+1]
         return cropped
     
@@ -115,11 +88,9 @@ def fallback_full_image_processing(img):
 
 def correct_perspective(img, contour):
     """Skoryguj perspektywę dokumentu (prostowanie)"""
-    # Punkty narożników dokumentu
     pts = contour.reshape(4, 2)
     rect = np.zeros((4, 2), dtype="float32")
     
-    # Porządkowanie punktów: [lewy-górny, prawy-górny, prawy-dolny, lewy-dolny]
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]
     rect[2] = pts[np.argmax(s)]
@@ -143,21 +114,22 @@ def correct_perspective(img, contour):
     warped = cv2.warpPerspective(img, M, (int(width), int(height)))
     return warped
 
-def plot_comparison(original, processed, title="Porównanie"):
-    """Wizualizacja oryginału vs. przetworzony obraz"""
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plt.imshow(original)
-    plt.title("Oryginał")
-    plt.axis('off')
+def scale_to_dpi(image, target_dpi=300):
+    """Skaluj obraz do zadanej rozdzielczości DPI"""
+    # Domyślnie zakładamy 96 DPI dla obrazów
+    original_dpi = 96
+    scale_factor = target_dpi / original_dpi
     
-    plt.subplot(1, 2, 2)
-    plt.imshow(processed)
-    plt.title("Przetworzony")
-    plt.axis('off')
+    new_width = int(image.shape[1] * scale_factor)
+    new_height = int(image.shape[0] * scale_factor)
     
-    plt.suptitle(title)
-    plt.show()
+    scaled_image = cv2.resize(
+        image, 
+        (new_width, new_height), 
+        interpolation=cv2.INTER_LANCZOS4
+    )
+    
+    return scaled_image
 
 def process_document(input_path, output_path):
     """Główna funkcja przetwarzania dokumentu"""
@@ -192,18 +164,20 @@ def process_document(input_path, output_path):
                 print("Nie znaleziono konturu dokumentu. Stosuję przetwarzanie pełnego obrazu.")
                 final_image = fallback_full_image_processing(no_shadow_image)
         
-        # Zapisz i zwizualizuj wynik
-        Image.fromarray(final_image).save(output_path, quality=95)
-        print(f"Zapisano przetworzony obraz jako: {output_path}")
-        plot_comparison(original_image, final_image)
+        # 5. Skalowanie do 300 DPI
+        final_image_scaled = scale_to_dpi(final_image)
         
-        return final_image
+        # Zapisz
+        Image.fromarray(final_image_scaled).save(output_path, quality=95)
+        print(f"Zapisano przetworzony obraz jako: {output_path}")
+        
+        return final_image_scaled
     
     except Exception as e:
         print(f"Błąd: {e}")
         return None
 
 if __name__ == "__main__":
-    input_path = "doc2.jpg"
+    input_path = "doc11.jpg"
     output_path = "dokument_processed.jpg"
     process_document(input_path, output_path)
