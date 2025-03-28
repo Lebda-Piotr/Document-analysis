@@ -22,7 +22,7 @@ def remove_shadow(img):
         result_planes.append(norm_diff)
     return cv2.merge(result_planes)
 
-def improved_edge_detection(img):
+def improved_edge_detection(img, use_alternative=False):
     """Zaawansowane wykrywanie krawędzi dokumentu"""
     # Konwersja do skali szarości
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -30,27 +30,36 @@ def improved_edge_detection(img):
     # Redukcja szumów
     gray = cv2.bilateralFilter(gray, 11, 17, 17)
     
-    # Adaptacyjne progowanie
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, 2
-    )
-    
-    # Algorytm Canny z adaptacyjnymi progami
-    edges = cv2.Canny(
-        thresh, 
-        threshold1=cv2.mean(gray)[0] * 0.5, 
-        threshold2=cv2.mean(gray)[0] * 1.5
-    )
+    if not use_alternative:
+        # Standardowe podejście
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
+        
+        edges = cv2.Canny(
+            thresh, 
+            threshold1=cv2.mean(gray)[0] * 0.5, 
+            threshold2=cv2.mean(gray)[0] * 1.5
+        )
+    else:
+        # Alternatywne podejście dla trudnych przypadków
+        # Wyrównanie histogramu
+        gray = cv2.equalizeHist(gray)
+        
+        # Progowanie Otsu
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        edges = cv2.Canny(gray, 10, 250)
     
     # Dylatacja krawędzi dla połączenia przerw
     kernel = np.ones((3,3), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
+    edges = cv2.dilate(edges, kernel, iterations=2)
     
     return edges
 
-def advanced_document_contour(edges):
+def advanced_document_contour(edges, img_area):
     """Zaawansowane znajdowanie konturu dokumentu"""
     # Znajdź kontury
     contours, _ = cv2.findContours(
@@ -66,12 +75,13 @@ def advanced_document_contour(edges):
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
         
-        # Kryteria dla dokumentu:
+        # Zaawansowane kryteria dla dokumentu:
         # - około 4 wierzchołki
-        # - znaczący obszar
+        # - znaczący obszar (nie za mały, nie za duży)
         # - prawie prostokątny
         if (len(approx) == 4 and 
-            area > 1000 and  # minimalna wielkość
+            area > img_area * 0.1 and  # min 10% obszaru obrazu
+            area < img_area * 0.95 and  # max 95% obszaru obrazu
             cv2.isContourConvex(approx)):
             document_contours.append(approx)
     
@@ -80,6 +90,28 @@ def advanced_document_contour(edges):
         return max(document_contours, key=cv2.contourArea)
     
     return None
+
+def fallback_full_image_processing(img):
+    """Przetwarzanie gdy nie znaleziono konturu - pełny obraz"""
+    # Konwersja do skali szarości
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Wyrównanie histogramu
+    gray = cv2.equalizeHist(gray)
+    
+    # Binaryzacja Otsu
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Znajdź marginesy
+    rows = np.where(~np.all(binary == 255, axis=1))[0]
+    cols = np.where(~np.all(binary == 255, axis=0))[0]
+    
+    if len(rows) > 0 and len(cols) > 0:
+        # Przytnij do granic dokumentu
+        cropped = img[rows.min():rows.max()+1, cols.min():cols.max()+1]
+        return cropped
+    
+    return img
 
 def correct_perspective(img, contour):
     """Skoryguj perspektywę dokumentu (prostowanie)"""
@@ -111,14 +143,6 @@ def correct_perspective(img, contour):
     warped = cv2.warpPerspective(img, M, (int(width), int(height)))
     return warped
 
-def rotate_image(img, angle):
-    """Obróć obraz o podany kąt (z wypełnieniem tła)"""
-    (h, w) = img.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
-    return rotated
-
 def plot_comparison(original, processed, title="Porównanie"):
     """Wizualizacja oryginału vs. przetworzony obraz"""
     plt.figure(figsize=(12, 6))
@@ -135,42 +159,51 @@ def plot_comparison(original, processed, title="Porównanie"):
     plt.suptitle(title)
     plt.show()
 
-def save_image(image, output_path):
-    """Zapisz obraz jako plik JPEG"""
-    Image.fromarray(image).save(output_path, quality=95)
-
-if __name__ == "__main__":
-    # Ścieżki do plików
-    input_path = "doc1.png"
-    output_path = "dokument_processed.jpg"
-    
+def process_document(input_path, output_path):
+    """Główna funkcja przetwarzania dokumentu"""
     try:
         # 1. Wczytaj obraz
         original_image = load_image(input_path)
         
+        # Oblicz całkowity obszar obrazu
+        img_area = original_image.shape[0] * original_image.shape[1]
+        
         # 2. Usuń cień
         no_shadow_image = remove_shadow(original_image)
         
-        # 3. Wykryj krawędzie i kontur dokumentu (ULEPSZONE)
+        # 3. Wykryj krawędzie i kontur dokumentu
         edged_image = improved_edge_detection(no_shadow_image)
-        contour = advanced_document_contour(edged_image)
+        contour = advanced_document_contour(edged_image, img_area)
         
         if contour is not None:
             # 4. Korekta perspektywy (jeśli znaleziono kontur)
             warped_image = correct_perspective(no_shadow_image, contour)
-            
-            # 5. Obrót o mały kąt (opcjonalnie, jeśli dokument jest przechylony)
-            final_image = rotate_image(warped_image, angle=0)  # Zmień angle jeśli potrzeba
+            final_image = warped_image
         else:
-            print("Nie znaleziono konturu dokumentu. Pomijam korektę perspektywy.")
-            final_image = no_shadow_image
+            # Próba alternatywnego wykrywania krawędzi
+            edged_image_alt = improved_edge_detection(no_shadow_image, use_alternative=True)
+            contour_alt = advanced_document_contour(edged_image_alt, img_area)
+            
+            if contour_alt is not None:
+                warped_image = correct_perspective(no_shadow_image, contour_alt)
+                final_image = warped_image
+            else:
+                # Fallback - przetwarzanie całego obrazu
+                print("Nie znaleziono konturu dokumentu. Stosuję przetwarzanie pełnego obrazu.")
+                final_image = fallback_full_image_processing(no_shadow_image)
         
-        # 6. Zapisz wynik
-        save_image(final_image, output_path)
+        # Zapisz i zwizualizuj wynik
+        Image.fromarray(final_image).save(output_path, quality=95)
         print(f"Zapisano przetworzony obraz jako: {output_path}")
-        
-        # 7. Wizualizacja
         plot_comparison(original_image, final_image)
         
+        return final_image
+    
     except Exception as e:
         print(f"Błąd: {e}")
+        return None
+
+if __name__ == "__main__":
+    input_path = "doc2.jpg"
+    output_path = "dokument_processed.jpg"
+    process_document(input_path, output_path)
