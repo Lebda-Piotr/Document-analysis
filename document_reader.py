@@ -1,10 +1,103 @@
 import cv2
-import numpy as np
 import pytesseract
-from langdetect import detect_langs
-import Levenshtein
-import difflib
+import re
+import json
+from typing import List, Dict, Tuple
+from datetime import datetime
+from preprocessing import process_document
+from symspellpy import SymSpell, Verbosity
+from langdetect import detect, LangDetectException
 
+# Inicjalizacja słowników
+sym_spell_pl = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+sym_spell_en = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+
+# Ładowanie słowników
+def load_dictionaries():
+    """Ładuje słowniki dla obu języków"""
+    try:
+        # Słownik polski (już przekonwertowany) - dodane explicit encoding=utf-8
+        sym_spell_pl.load_dictionary("pl_dict.txt", term_index=0, count_index=1, encoding="utf-8")
+    except (FileNotFoundError, UnicodeDecodeError) as e:
+        print(f"Błąd ładowania słownika polskiego: {e}")
+        # Rozszerzony fallback dla polskiego ze znakami diakrytycznymi
+        pl_fallback = {
+            "wrocław": 1000, "lipca": 1000, "adres": 1000, "dokumentu": 1000,
+            "zażółć": 800, "gęślą": 800, "jaźń": 800, "żółw": 900, 
+            "miesiąc": 1000, "piątek": 1000, "środa": 1000, "firma": 1000,
+            "faktura": 1000, "płatność": 900, "należność": 900, "ulica": 950
+        }
+        with open("pl_fallback.txt", "w", encoding="utf-8") as f:
+            for word, freq in pl_fallback.items():
+                f.write(f"{word} {freq}\n")
+        # Załaduj fallback słownik również z kodowaniem UTF-8
+        sym_spell_pl.load_dictionary("pl_fallback.txt", term_index=0, count_index=1, encoding="utf-8")
+
+    try:
+        # Słownik angielski - również z explicit encoding
+        sym_spell_en.load_dictionary("en-80k.txt", term_index=0, count_index=1, encoding="utf-8")
+    except (FileNotFoundError, UnicodeDecodeError) as e:
+        print(f"Błąd ładowania słownika angielskiego: {e}")
+        # Fallback dla angielskiego
+        en_fallback = {"address":1000, "document":1000, "invoice":1000, "payment":950, "date":950}
+        with open("en_fallback.txt", "w", encoding="utf-8") as f:
+            for word, freq in en_fallback.items():
+                f.write(f"{word} {freq}\n")
+        sym_spell_en.load_dictionary("en_fallback.txt", term_index=0, count_index=1, encoding="utf-8")
+
+load_dictionaries()
+
+def detect_language(text: str) -> str:
+    """Wykrywa język tekstu"""
+    try:
+        lang = detect(text)
+        return 'pl' if lang == 'pl' else 'en'
+    except LangDetectException:
+        return 'pl'  # Domyślnie polski
+
+def correct_spelling(text: str, language: str) -> str:
+    """
+    Poprawia literówki w tekście
+    Args:
+        text: Tekst do poprawienia
+        language: 'pl' lub 'en'
+    Returns:
+        Tekst po autokorekcie
+    """
+    sym_spell = sym_spell_pl if language == 'pl' else sym_spell_en
+    lines = text.split('\n')
+    corrected_lines = []
+    
+    for line in lines:
+        words = line.split()
+        corrected_words = []
+        
+        for word in words:
+            # Pomijaj liczby, daty, numery dokumentów i specjalne znaki
+            if (re.match(r'^[\W\d_]+$', word) or 
+                re.match(r'\b\d{2}-\d{2}-\d{4}\b', word) or
+                re.match(r'\b[A-Z]{2,}/\d{3,}/\d{4}\b', word)):
+                corrected_words.append(word)
+                continue
+            
+            # Popraw słowo
+            suggestions = sym_spell.lookup(word, Verbosity.CLOSEST, max_edit_distance=2)
+            if suggestions:
+                corrected_word = suggestions[0].term
+                # Zachowaj wielkość liter oryginału
+                if word.istitle():
+                    corrected_word = corrected_word.title()
+                elif word.isupper():
+                    corrected_word = corrected_word.upper()
+                corrected_words.append(corrected_word)
+            else:
+                corrected_words.append(word)
+        
+        corrected_lines.append(' '.join(corrected_words))
+    
+    return '\n'.join(corrected_lines)
+
+# Funkcje OCR
 def basic_preprocessing(gray):
     """Podstawowy preprocessing obrazu"""
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
@@ -12,175 +105,165 @@ def basic_preprocessing(gray):
     gray = cv2.medianBlur(gray, 3)
     return gray
 
-def advanced_preprocessing(gray):
-    """Zaawansowany preprocessing obrazu"""
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
-    gray = cv2.adaptiveThreshold(
-        gray, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2
-    )
-    kernel = np.ones((2,2), np.uint8)
-    gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)
-    return gray
-
-def perform_ocr(image, preprocess='none', lang='pol'):
+def perform_ocr(image, preprocess='none', lang='pol+eng'):
     """
-    Uproszczona funkcja OCR skupiająca się na najlepszych metodach
+    Wykonaj OCR na obrazie z autokorektą
+    Args:
+        image: Obraz do analizy
+        preprocess: 'none', 'light' lub 'basic'
+        lang: język dla Tesseract
+    Returns:
+        Tuple: (raw_text, corrected_text, detected_language)
     """
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     else:
         gray = image
     
-    # Tylko podstawowe opcje preprocessingu
     if preprocess == 'light':
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         gray = clahe.apply(gray)
-        gray = cv2.medianBlur(gray, 1)
     elif preprocess == 'basic':
         gray = basic_preprocessing(gray)
-    elif preprocess == 'advanced':
-        gray = advanced_preprocessing(gray)
     
     custom_config = r'--oem 3 --psm 6'
-    text = pytesseract.image_to_string(gray, config=custom_config, lang=lang)
-    return text
+    raw_text = pytesseract.image_to_string(gray, config=custom_config, lang=lang)
+    
+    # Wykryj język i popraw tekst
+    detected_lang = detect_language(raw_text)
+    corrected_text = correct_spelling(raw_text, detected_lang)
+    
+    return raw_text, corrected_text, detected_lang
 
-def detect_document_language(text_sample):
-    """
-    Wykryj język tekstu z dokumentu
+# Funkcje ekstrakcji danych
+def extract_dates(text: str) -> List[str]:
+    """Znajdź daty w różnych formatach"""
+    date_patterns = [
+        (r'\b\d{2}-\d{2}-\d{4}\b', '%d-%m-%Y'),
+        (r'\b\d{2}/\d{2}/\d{4}\b', '%d/%m/%Y'),
+        (r'\b\d{4}-\d{2}-\d{2}\b', '%Y-%m-%d'),
+        (r'\b\d{1,2}\s+[a-z]+\s+\d{4}\b', '%d %B %Y')
+    ]
     
-    Args:
-        text_sample (str): Próbka tekstu do analizy
-        
-    Returns:
-        list: Lista możliwych języków z prawdopodobieństwami
-    """
-    try:
-        languages = detect_langs(text_sample)
-        return languages
-    except:
-        return [{'lang': 'pl', 'prob': 1.0}]
+    found_dates = []
+    for pattern, date_format in date_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            try:
+                date_str = match.group()
+                datetime.strptime(date_str, date_format)
+                found_dates.append(date_str)
+            except ValueError:
+                continue
+    return list(set(found_dates))
 
-def get_ocr_language_code(languages):
-    """
-    Konwertuj wykryte języki na kody językowe Tesseract
-    
-    Args:
-        languages (list): Lista języków z detect_langs
-        
-    Returns:
-        str: String z kodami języków dla Tesseract
-    """
-    lang_map = {
-        'pl': 'pol',
-        'en': 'eng',
-        'de': 'deu',
-        'fr': 'fra',
-        'es': 'spa'
-    }
-    
-    tesseract_langs = []
-    for lang in languages:
-        code = lang.lang
-        if code in lang_map:
-            tesseract_langs.append(lang_map[code])
-    
-    if not tesseract_langs:
-        return 'pol+eng'
-    
-    return '+'.join(tesseract_langs[:2])
+def extract_document_numbers(text: str) -> List[str]:
+    """Znajdź numery dokumentów"""
+    patterns = [
+        r'\b[A-Z]{2,}/\d{3,}/\d{4}\b',
+        r'\bNr\s*\.?\s*\d{3,}[/-]\d{3,}\b',
+        r'\b\d{3,}[/-]\d{3,}\b'
+    ]
+    numbers = []
+    for pattern in patterns:
+        numbers.extend(re.findall(pattern, text, flags=re.IGNORECASE))
+    return numbers
 
-def calculate_ocr_metrics(original, ocr):
-    """
-    Oblicz szczegółowe metryki jakości OCR
-    
-    Args:
-        original (str): Tekst oryginalny/referencyjny
-        ocr (str): Tekst rozpoznany przez OCR
-        
-    Returns:
-        dict: Słownik z metrykami jakości
-    """
-    word_diff = difflib.SequenceMatcher(None, original, ocr)
-    
+def extract_emails(text: str) -> List[str]:
+    """Znajdź adresy email"""
+    return list(set(re.findall(
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+        text,
+        flags=re.IGNORECASE
+    )))
+
+def extract_phones(text: str) -> List[str]:
+    """Znajdź numery telefonów"""
+    patterns = [
+        r'\b\d{3}[-\s]?\d{3}[-\s]?\d{3}\b',
+        r'\b\d{2}[-\s]?\d{3}[-\s]?\d{2}[-\s]?\d{2}\b',
+        r'\+\d{2}\s?\d{3}\s?\d{3}\s?\d{3}\b'
+    ]
+    phones = []
+    for pattern in patterns:
+        phones.extend(re.findall(pattern, text))
+    return list(set(phones))
+
+def extract_metadata(text: str) -> Dict[str, List[str]]:
+    """Główna funkcja ekstrakcji metadanych"""
     return {
-        'levenshtein_distance': Levenshtein.distance(original, ocr),
-        'similarity_ratio': word_diff.ratio(),
-        'word_accuracy': calculate_word_accuracy(original, ocr),
-        'character_accuracy': calculate_character_accuracy(original, ocr),
-        'error_rate': calculate_error_rate(original, ocr)
+        'dates': extract_dates(text),
+        'document_numbers': extract_document_numbers(text),
+        'emails': extract_emails(text),
+        'phones': extract_phones(text)
     }
 
-def calculate_word_accuracy(original, ocr):
-    """Oblicz dokładność na poziomie słów"""
-    original_words = original.split()
-    ocr_words = ocr.split()
-    correct = sum(1 for ow, cw in zip(original_words, ocr_words) if ow == cw)
-    return correct / max(len(original_words), 1)
+# Funkcje zapisu i wizualizacji
+def save_metadata(data: Dict, filename: str = "metadata.json"):
+    """Zapisz wyniki do JSON"""
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Zapisano metadane do {filename}")
 
-def calculate_character_accuracy(original, ocr):
-    """Oblicz dokładność na poziomie znaków"""
-    matches = sum(1 for o, c in zip(original, ocr) if o == c)
-    return matches / max(len(original), 1)
+def save_text_comparison(raw_text: str, corrected_text: str, language: str, filename: str = "text_comparison.txt"):
+    """Zapisz porównanie tekstów przed i po autokorekcie do pliku TXT"""
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"Wykryty język: {'polski' if language == 'pl' else 'angielski'}\n\n")
+        f.write("=" * 80 + "\n")
+        f.write("TEKST PRZED KOREKTĄ:\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(raw_text)
+        f.write("\n\n" + "=" * 80 + "\n")
+        f.write("TEKST PO KOREKCIE:\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(corrected_text)
+    
+    print(f"Zapisano porównanie tekstów do {filename}")
 
-def calculate_error_rate(original, ocr):
-    """Oblicz współczynnik błędów"""
-    return Levenshtein.distance(original, ocr) / max(len(original), 1)
+def print_metadata(metadata: Dict):
+    """Wypisz metadane w czytelnej formie"""
+    print("\nWyodrębnione metadane:")
+    print(f"Daty: {', '.join(metadata.get('dates', []))}")
+    print(f"Numery dokumentów: {', '.join(metadata.get('document_numbers', []))}")
+    print(f"Emails: {', '.join(metadata.get('emails', []))}")
+    print(f"Telefony: {', '.join(metadata.get('phones', []))}")
 
-def generate_diff_report(original, ocr, output_file="diff_report.html"):
+# Główna funkcja przetwarzania
+def process_document_with_metadata(input_path: str):
     """
-    Generuj raport różnic w formacie HTML
-    
-    Args:
-        original (str): Tekst oryginalny
-        ocr (str): Tekst z OCR
-        output_file (str): Ścieżka do pliku wyjściowego
+    Pełne przetwarzanie dokumentu z ekstrakcją metadanych
     """
-    differ = difflib.HtmlDiff()
-    html = differ.make_file(
-        original.splitlines(), 
-        ocr.splitlines(),
-        fromdesc="Oryginał",
-        todesc="OCR"
-    )
+    # 1. Przetwórz obraz
+    processed_image = process_document(input_path, 'temp_processed.jpg')
     
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(html)
-    print(f"Wygenerowano raport różnic: {output_file}")
-
-def compare_ocr_results(input_path, output_file="ocr_results_simple.txt"):
-    """
-    Uproszczona funkcja porównująca tylko najlepsze metody
-    """
-    from preprocessing import process_document
+    # 2. Wykonaj OCR z autokorektą
+    raw_text, corrected_text, language = perform_ocr(processed_image)
     
-    processed_image = process_document(input_path, 'temp_processed.jpg', simple_preprocess=True)
-    raw_image = cv2.imread(input_path)
-    raw_image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB)
+    # 3. Zapisz porównanie do pliku zamiast wyświetlania na konsoli
+    save_text_comparison(raw_text, corrected_text, language)
     
-    # Wykryj język
-    sample_text = perform_ocr(raw_image, preprocess='none')
-    languages = detect_document_language(sample_text[:500])
-    lang_code = get_ocr_language_code(languages)
+    # Wyświetl krótką informację na konsoli
+    print(f"\nWykryty język: {'polski' if language == 'pl' else 'angielski'}")
+    print("Tekst przed i po korekcie zapisano do pliku text_comparison.txt")
     
-    # Testuj tylko najlepsze metody
-    results = {
-        "Przetworzony obraz (bez preprocessingu)": perform_ocr(processed_image, preprocess='none', lang=lang_code),
-        "Przetworzony obraz (lekki preprocessing)": perform_ocr(processed_image, preprocess='light', lang=lang_code),
+    # 4. Wyodrębnij metadane
+    metadata = extract_metadata(corrected_text)
+    result = {
+        'language': language,
+        'raw_text': raw_text,
+        'corrected_text': corrected_text,
+        'metadata': metadata
     }
     
-    # Zapisz wyniki
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(f"Użyte języki Tesseract: {lang_code}\n\n")
-        for method, text in results.items():
-            f.write(f"=== {method.upper()} ===\n")
-            f.write(text + "\n\n")
+    # 5. Zapisz i wyświetl wyniki
+    save_metadata(result)
+    print_metadata(metadata)
     
-    print(f"Zapisano uproszczone wyniki OCR do: {output_file}")
+    return result
 
 if __name__ == "__main__":
-    input_path = "doc2.jpg"
-    compare_ocr_results(input_path)
+    # Wymagane pliki słowników w tym samym katalogu:
+    # - pl_dict.txt (przekonwertowany słownik polski w kodowaniu UTF-8)
+    # - en-80k.txt (słownik angielski w kodowaniu UTF-8)
+    
+    input_path = "doc11.jpg"  # Zmień na swoją ścieżkę
+    process_document_with_metadata(input_path)
