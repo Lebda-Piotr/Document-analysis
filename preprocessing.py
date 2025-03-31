@@ -74,48 +74,36 @@ def advanced_document_contour(edges, img_area):
 
 def order_points(pts):
     """Porządkuj punkty: top-left, top-right, bottom-right, bottom-left"""
-    # inicjalizacja listy współrzędnych w kolejności: top-left, top-right, bottom-right, bottom-left
     rect = np.zeros((4, 2), dtype="float32")
-
-    # top-left będzie mieć najmniejszą sumę, bottom-right największą sumę
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]
     rect[2] = pts[np.argmax(s)]
-
-    # top-right będzie mieć najmniejszą różnicę, bottom-left największą różnicę
     diff = np.diff(pts, axis=1)
     rect[1] = pts[np.argmin(diff)]
     rect[3] = pts[np.argmax(diff)]
-
     return rect
 
 def four_point_transform(image, pts):
     """Transformacja perspektywy czteropunktowa"""
-    # Porządkowanie punktów
     rect = order_points(pts)
     (tl, tr, br, bl) = rect
 
-    # Obliczenie szerokości dokumentu
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
     max_width = max(int(widthA), int(widthB))
 
-    # Obliczenie wysokości dokumentu
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
     max_height = max(int(heightA), int(heightB))
 
-    # Zdefiniowanie docelowych punktów
     dst = np.array([
         [0, 0],
         [max_width - 1, 0],
         [max_width - 1, max_height - 1],
         [0, max_height - 1]], dtype="float32")
 
-    # Obliczenie macierzy transformacji i zastosowanie
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(image, M, (max_width, max_height))
-
     return warped
 
 def estimate_capital_height(image):
@@ -132,46 +120,63 @@ def estimate_capital_height(image):
     
     return np.median(heights) if len(heights) > 0 else 30
 
+def enhance_image_quality(image):
+    """Poprawa jakości obrazu przed OCR"""
+    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    l = clahe.apply(l)
+    lab = cv2.merge((l, a, b))
+    image = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    image = cv2.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
+    return image
+
+def adjust_for_ocr(image, dpi=300, simple_mode=True):
+    """Dostosowanie obrazu dla lepszego OCR - uproszczona wersja"""
+    # Skalowanie do docelowego DPI
+    scale_factor = dpi / 72.0
+    new_width = int(image.shape[1] * scale_factor)
+    new_height = int(image.shape[0] * scale_factor)
+    image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    if simple_mode:
+        # Tylko konwersja do skali szarości
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        return gray
+    else:
+        # Lekkie poprawienie kontrastu (CLAHE)
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        return clahe.apply(gray)
+
 def correct_perspective(img, target_capital_height=30):
     """Skoryguj perspektywę dokumentu"""
-    # Usuń cień
     no_shadow_image = remove_shadow(img)
-    
-    # Wyszukaj krawędzie dokumentu
     edges = improved_edge_detection(no_shadow_image)
     
     try:
-        # Próba znalezienia konturu dokumentu
         img_area = img.shape[0] * img.shape[1]
         contour = advanced_document_contour(edges, img_area)
         
         if contour is not None:
-            # Spłaszcz kontur do punktów
             perimeter = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
             
-            # Jeśli znaleziono cztery punkty
             if len(approx) == 4:
-                # Transformacja perspektywy
                 warped = four_point_transform(no_shadow_image, approx.reshape(4, 2))
-                
-                # Przeskaluj do optymalnej wysokości wielkich liter
                 current_height = estimate_capital_height(warped)
                 scale_factor = target_capital_height / current_height
-                
                 new_width = int(warped.shape[1] * scale_factor)
                 new_height = int(warped.shape[0] * scale_factor)
-                
                 return cv2.resize(warped, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
     
     except Exception as e:
         print(f"Błąd podczas korekcji perspektywy: {e}")
     
-    # Jeśli nie udało się przetworzyć, zwróć oryginalny obraz
     return img
 
-def process_document(input_path, output_path):
-    """Główna funkcja przetwarzania dokumentu"""
+def process_document(input_path, output_path, simple_preprocess=True):
+    """Główna funkcja przetwarzania dokumentu - uproszczona"""
     try:
         # 1. Wczytaj obraz
         original_image = load_image(input_path)
@@ -179,11 +184,17 @@ def process_document(input_path, output_path):
         # 2. Korekta perspektywy
         final_image = correct_perspective(original_image)
         
-        # 3. Zapisz wynik
+        # 3. Poprawa jakości (uproszczona)
+        final_image = enhance_image_quality(final_image)
+        
+        # 4. Dostosowanie dla OCR (uproszczone)
+        final_image = adjust_for_ocr(final_image, simple_mode=simple_preprocess)
+        
+        # 5. Zapisz wynik
         Image.fromarray(final_image).save(output_path, quality=95)
         print(f"Zapisano przetworzony obraz jako: {output_path}")
         
-        # Opcjonalnie: porównaj obrazy
+        # Wizualizacja
         plt.figure(figsize=(12, 6))
         plt.subplot(1, 2, 1)
         plt.imshow(original_image)
@@ -191,12 +202,11 @@ def process_document(input_path, output_path):
         plt.axis('off')
         
         plt.subplot(1, 2, 2)
-        plt.imshow(final_image)
+        plt.imshow(final_image, cmap='gray')
         plt.title("Przetworzony")
         plt.axis('off')
         
         plt.show()
-        
         return final_image
     
     except Exception as e:
