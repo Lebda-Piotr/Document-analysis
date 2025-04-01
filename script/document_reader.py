@@ -8,6 +8,7 @@ from datetime import datetime
 from preprocessing import process_document
 # from symspellpy import SymSpell, Verbosity  # Zakomentowane - nieużywane w tej wersji
 from langdetect import detect, LangDetectException
+from summary import get_document_summary
 
 """
 # Zakomentowana sekcja słowników - zachowana na przyszłość
@@ -263,8 +264,17 @@ def process_document_with_metadata(input_path: str):
     save_metadata(result)
     print_metadata(metadata)
     
+    # 6. Analiza z modelem językowym
+    if len(raw_text.strip()) > 50:
+        analysis_result = get_document_summary(raw_text, metadata)
+        
+        if analysis_result.get('summary'):
+            result['llm_analysis'] = analysis_result['summary']
+            
+            if analysis_result.get('filepath'):
+                print(f"\nZapisano analizę do pliku: {analysis_result['filepath']}")
     return result
 
 if __name__ == "__main__":
-    input_path = os.path.join('data', 'input', 'doc11.jpg')
+    input_path = os.path.join('data', 'input', 'doc2.jpg')
     process_document_with_metadata(input_path)
