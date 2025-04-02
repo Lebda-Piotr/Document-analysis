@@ -176,7 +176,7 @@ def correct_perspective(img, target_capital_height=30):
     
     return img
 
-def process_document(input_path, output_path, simple_preprocess=True):
+def process_document(input_path, output_path, simple_preprocess=True, show_plots=False):
     """Główna funkcja przetwarzania dokumentu - uproszczona"""
     try:
         # 1. Wczytaj obraz
@@ -199,19 +199,19 @@ def process_document(input_path, output_path, simple_preprocess=True):
         Image.fromarray(final_image).save(output_path, quality=95)
         print(f"Zapisano przetworzony obraz jako: {output_path}")
         
-        # Wizualizacja
-        plt.figure(figsize=(12, 6))
-        plt.subplot(1, 2, 1)
-        plt.imshow(original_image)
-        plt.title("Oryginał")
-        plt.axis('off')
-        
-        plt.subplot(1, 2, 2)
-        plt.imshow(final_image, cmap='gray')
-        plt.title("Przetworzony")
-        plt.axis('off')
-        
-        plt.show()
+        if show_plots:
+            plt.figure(figsize=(12, 6))
+            plt.subplot(1, 2, 1)
+            plt.imshow(original_image)
+            plt.title("Oryginał")
+            plt.axis('off')
+            
+            plt.subplot(1, 2, 2)
+            plt.imshow(final_image, cmap='gray')
+            plt.title("Przetworzony")
+            plt.axis('off')
+            
+            plt.show()
         return final_image
     
     except Exception as e:

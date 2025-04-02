@@ -239,8 +239,8 @@ def process_document_with_metadata(input_path: str):
     """
     Pełne przetwarzanie dokumentu z ekstrakcją metadanych
     """
-    # 1. Przetwórz obraz
-    processed_image = process_document(input_path, os.path.join('data', 'output', 'temp_processed.jpg'))
+    # 1. Przetwórz obraz (wyłącz wizualizację)
+    processed_image = process_document(input_path, os.path.join('data', 'output', 'temp_processed.jpg'), show_plots=False)
     
     # 2. Wykonaj OCR (bez autokorekty)
     raw_text, language = perform_ocr(processed_image)

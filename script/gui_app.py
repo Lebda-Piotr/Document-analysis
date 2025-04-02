@@ -10,12 +10,17 @@ class DocumentAnalyzerApp:
         self.root = root
         self.root.title("Analizator Dokumentów")
         self.root.geometry("800x600")
+        self.is_analyzing = False  # Flaga śledząca stan analizy
         
         # Stylizacja
         self.style = ttk.Style()
         self.style.configure('TFrame', background='#f0f0f0')
         self.style.configure('TButton', padding=6, font=('Arial', 10))
         self.style.configure('TLabel', background='#f0f0f0', font=('Arial', 10))
+        self.style.configure('Disabled.TButton', foreground='gray')  # Styl dla wyłączonego przycisku
+        
+        # Obsługa zamknięcia okna
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.create_widgets()
         
@@ -43,18 +48,29 @@ class DocumentAnalyzerApp:
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
         
-        ttk.Button(button_frame, text="Analizuj dokument", command=self.start_analysis).pack(side=tk.LEFT)
+        self.analyze_button = ttk.Button(
+            button_frame, 
+            text="Analizuj dokument", 
+            command=self.start_analysis
+        )
+        self.analyze_button.pack(side=tk.LEFT)
+        
         ttk.Button(button_frame, text="Wyczyść", command=self.clear_all).pack(side=tk.LEFT, padx=10)
         ttk.Button(button_frame, text="Wyjdź", command=self.root.quit).pack(side=tk.RIGHT)
         
         # Panel statusu
         self.status_var = tk.StringVar()
         self.status_var.set("Gotowy do analizy")
-        ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W).pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(
+            main_frame, 
+            textvariable=self.status_var, 
+            relief=tk.SUNKEN, 
+            anchor=tk.W
+        ).pack(fill=tk.X, pady=(10, 0))
         
         # Progress bar
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        
+    
     def browse_file(self):
         filetypes = (
             ('Obrazy', '*.jpg *.jpeg *.png'),
@@ -87,15 +103,21 @@ class DocumentAnalyzerApp:
             messagebox.showwarning("Uwaga", "Wybierz plik do analizy")
             return
         
-        # Uruchom analizę w osobnym wątku, aby nie blokować GUI
+        if self.is_analyzing:
+            messagebox.showwarning("Uwaga", "Analiza już w trakcie. Proszę czekać...")
+            return
+        
+        self.is_analyzing = True
         self.status_var.set("Analizowanie dokumentu...")
         self.progress.pack(fill=tk.X, pady=(5, 0))
         self.progress.start()
         
+        # Wyłącz przyciski podczas analizy
+        self.analyze_button.config(state=tk.DISABLED, style='Disabled.TButton')
+        
         thread = threading.Thread(target=self.run_analysis, daemon=True)
         thread.start()
         
-        # Sprawdzanie postępu
         self.check_thread(thread)
     
     def check_thread(self, thread):
@@ -104,6 +126,8 @@ class DocumentAnalyzerApp:
         else:
             self.progress.stop()
             self.progress.pack_forget()
+            self.is_analyzing = False
+            self.analyze_button.config(state=tk.NORMAL, style='TButton')
     
     def run_analysis(self):
         try:
@@ -122,21 +146,29 @@ class DocumentAnalyzerApp:
                     
                     # Otwórz plik w domyślnej aplikacji
                     os.startfile(latest_file)
-                    self.status_var.set("Analiza zakończona - otwarto plik z wynikami")
+                    self.root.after(0, lambda: self.status_var.set("Analiza zakończona - otwarto plik z wynikami"))
                 else:
-                    self.status_var.set("Analiza zakończona - brak pliku wynikowego")
+                    self.root.after(0, lambda: self.status_var.set("Analiza zakończona - brak pliku wynikowego"))
             else:
-                self.status_var.set("Analiza zakończona - brak folderu wynikowego")
+                self.root.after(0, lambda: self.status_var.set("Analiza zakończona - brak folderu wynikowego"))
             
         except Exception as e:
-            self.status_var.set("Błąd podczas analizy")
-            messagebox.showerror("Błąd", f"Wystąpił błąd podczas analizy: {str(e)}")
+            self.root.after(0, lambda: self.status_var.set("Błąd podczas analizy"))
+            self.root.after(0, lambda: messagebox.showerror("Błąd", f"Wystąpił błąd podczas analizy: {str(e)}"))
     
     def clear_all(self):
-        self.file_path.set("")
-        self.image_label.configure(image='')
-        self.image_label.image = None
-        self.status_var.set("Gotowy do analizy")
+        if not self.is_analyzing:
+            self.file_path.set("")
+            self.image_label.configure(image='')
+            self.image_label.image = None
+            self.status_var.set("Gotowy do analizy")
+    
+    def on_close(self):
+        if self.is_analyzing:
+            if messagebox.askokcancel("Zamknij", "Analiza w trakcie. Czy na pewno chcesz zamknąć aplikację?"):
+                self.root.destroy()
+        else:
+            self.root.destroy()
 
 def main():
     root = tk.Tk()
