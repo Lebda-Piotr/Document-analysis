@@ -2,7 +2,7 @@ import os
 import re
 from datetime import datetime
 from typing import Dict, Optional
-import google.generativeai as genai  # Poprawiony import
+import google.generativeai as genai
 
 class GeminiDocumentSummarizer:
     """Proper implementation for Gemini API 0.3.0+"""
@@ -13,11 +13,10 @@ class GeminiDocumentSummarizer:
             raise ValueError("Missing Gemini API key. Set GEMINI_API_KEY environment variable.")
         
         # Initialize the client
-        genai.configure(api_key=self.api_key)  # Konfiguracja API
-        self.client = genai
+        genai.configure(api_key=self.api_key)
         
-        # Specify the model name
-        self.model_name = 'gemini-2.0-flash-thinking-exp-01-21'
+        # Get the model
+        self.model = genai.GenerativeModel('gemini-2.0-flash-thinking-exp-01-21')
     
     def generate_summary(self, raw_text: str, metadata: Dict) -> Dict:
         """Generates document summary using Gemini"""
@@ -28,10 +27,7 @@ class GeminiDocumentSummarizer:
             
         try:
             prompt = self._create_prompt(raw_text, metadata)
-            response = self.client.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
+            response = self.model.generate_content(prompt)
             
             if response.text:
                 result['summary'] = self._clean_response(response.text)

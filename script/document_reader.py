@@ -67,7 +67,7 @@ def detect_language(text: str) -> str:
     except LangDetectException:
         return 'pl'  # Domyślnie polski
 
-"""
+r"""
 # Zakomentowana funkcja autokorekty - zachowana na przyszłość
 def correct_spelling(text: str, language: str) -> str:
     ""
