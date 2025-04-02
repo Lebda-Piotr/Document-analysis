@@ -23,7 +23,7 @@ pip install opencv-python pytesseract pillow google-generativeai langdetect nump
 
 2. Zainstaluj Tesseract OCR:
 
-Windows: Pobierz z UB Mannheim
+Windows: Pobierz z [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
 
 macOS: 
 ```bash 
