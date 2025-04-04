@@ -276,5 +276,5 @@ def process_document_with_metadata(input_path: str):
     return result
 
 if __name__ == "__main__":
-    input_path = os.path.join('data', 'input', 'doc2.jpg')
+    input_path = os.path.join('data', 'input', 'doc11.jpg')
     process_document_with_metadata(input_path)

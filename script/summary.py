@@ -51,9 +51,15 @@ Treść dokumentu (pierwsze 28K znaków):
 
 Przygotuj podsumowanie w następującym formacie:
 Typ: [typ dokumentu]
+[linijka przerwy]
 Strony: [nadawca] → [odbiorca]
-Kluczowe daty: [lista]
+[linijka przerwy]
+Kluczowe daty: [lista] → [wytłumaczenie]
+[linijka przerwy]
 Kwoty: [wykryte]
+[linijka przerwy]
+Dane kontaktowe: [lista] → [wytłumaczenie]
+[linijka przerwy]
 Podsumowanie: [2-3 zdania po polsku]"""
     
     def _clean_response(self, text: str) -> str:
