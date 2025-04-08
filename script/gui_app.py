@@ -4,6 +4,7 @@ import os
 from document_reader import process_document_with_metadata
 from PIL import Image, ImageTk
 import threading
+from document_fields import DocumentFieldDetector
 
 class DocumentAnalyzerApp:
     def __init__(self, root):
@@ -133,28 +134,22 @@ class DocumentAnalyzerApp:
         try:
             input_path = self.file_path.get()
             
-            # Uruchom analizę dokumentu
-            result = process_document_with_metadata(input_path)
+            # Initialize field detector
+            field_detector = DocumentFieldDetector(
+                output_dir=os.path.join('..', 'data', 'output', 'dataset')
+            )
             
-            # Znajdź najnowszy plik z analizą
-            analysis_dir = os.path.join('data', 'output', 'analysis')
-            if os.path.exists(analysis_dir):
-                files = [f for f in os.listdir(analysis_dir) if f.startswith('gemini_') and f.endswith('.txt')]
-                if files:
-                    files.sort(reverse=True)
-                    latest_file = os.path.join(analysis_dir, files[0])
-                    
-                    # Otwórz plik w domyślnej aplikacji
-                    os.startfile(latest_file)
-                    self.root.after(0, lambda: self.status_var.set("Analiza zakończona - otwarto plik z wynikami"))
-                else:
-                    self.root.after(0, lambda: self.status_var.set("Analiza zakończona - brak pliku wynikowego"))
-            else:
-                self.root.after(0, lambda: self.status_var.set("Analiza zakończona - brak folderu wynikowego"))
+            # Detect fields
+            result = field_detector.detect_fields(input_path)
+            
+            # Show success message
+            self.root.after(0, lambda: self.status_var.set(
+                f"Detected {len(result['annotations'])} fields in document"
+            ))
             
         except Exception as e:
-            self.root.after(0, lambda: self.status_var.set("Błąd podczas analizy"))
-            self.root.after(0, lambda: messagebox.showerror("Błąd", f"Wystąpił błąd podczas analizy: {str(e)}"))
+            self.root.after(0, lambda: self.status_var.set("Error during analysis"))
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Analysis error: {str(e)}"))
     
     def clear_all(self):
         if not self.is_analyzing:
