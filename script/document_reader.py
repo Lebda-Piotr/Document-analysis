@@ -7,7 +7,7 @@ from typing import List, Dict
 from datetime import datetime
 from preprocessing import process_document
 from langdetect import detect, LangDetectException
-
+from utils import convert_pdf_to_images, get_supported_files
 from document_fields import DocumentFieldDetector
 
 def detect_language(text: str) -> str:
@@ -146,43 +146,64 @@ def print_metadata(metadata: Dict):
     print(f"Emails: {', '.join(metadata.get('emails', []))}")
     print(f"Phones: {', '.join(metadata.get('phones', []))}")
 
-def process_document_with_metadata(input_path: str):
+def process_document_with_metadata(input_path: str, is_pdf=False):
     """
     Processes document and extracts metadata
     
     Args:
-        input_path: Path to input document image
+        input_path: Path to input document (image or PDF)
+        is_pdf: Whether the input is a PDF file
     
     Returns:
-        Dictionary with processing results
+        List of dictionaries with processing results (one per page if PDF)
     """
-    # 1. Process the image
-    processed_image = process_document(
-        input_path, 
-        os.path.join('data', 'output', 'temp_processed.jpg'), 
-        show_plots=False
-    )
+    results = []
     
-    # 2. Perform OCR
-    raw_text, language = perform_ocr(processed_image)
+    if is_pdf:
+        # Convert PDF to images
+        images = convert_pdf_to_images(input_path)
+        
+        # Process each page
+        for i, image in enumerate(images):
+            print(f"\nProcessing PDF page {i+1}...")
+            result = _process_single_image(image, f"{os.path.basename(input_path)}_page_{i+1}")
+            results.append(result)
+    else:
+        # Process single image
+        processed_image = process_document(
+            input_path, 
+            os.path.join('data', 'output', 'temp_processed.jpg'), 
+            show_plots=False
+        )
+        result = _process_single_image(processed_image, os.path.basename(input_path))
+        results.append(result)
     
-    # 3. Save OCR result
-    save_text_comparison(raw_text)
-    """
-    # 4. Print language info
+    return results
+
+def _process_single_image(image, source_name):
+    """Helper function to process a single image"""
+    # Perform OCR
+    raw_text, language = perform_ocr(image)
+    
+    # Save OCR result with unique name
+    base_name = os.path.splitext(source_name)[0]
+    save_text_comparison(raw_text, f"ocr_output_{base_name}.txt")
+    
+    # Print language info
     print(f"\nDetected language: {'Polish' if language == 'pl' else 'English'}")
-    print("OCR result saved to ocr_output.txt")
-    """
-    # 5. Extract metadata
+    print(f"OCR result saved to ocr_output_{base_name}.txt")
+    
+    # Extract metadata
     metadata = extract_metadata(raw_text)
     result = {
+        'source': source_name,
         'language': language,
         'raw_text': raw_text,
         'metadata': metadata
     }
     
-    # 6. Save and display results
-    save_metadata(result)
+    # Save and display results
+    save_metadata(result, f"metadata_{base_name}.json")
     print_metadata(metadata)
     
     return result
