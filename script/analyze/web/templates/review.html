@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Annotation Review</title>
+    <style>
+        :root { --color-high: #ffcccc; --color-medium: #fff3cd; --color-low: #d4edda; }
+        .entry { margin: 1rem; padding: 1rem; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .confidence-high { background: var(--color-high); }
+        .confidence-medium { background: var(--color-medium); }
+        .confidence-low { background: var(--color-low); }
+        .translation { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>Annotation Review ({{ entries|length }} items)</h1>
+    <div id="controls">
+        <input type="text" id="search" placeholder="Search...">
+        <button onclick="filterEntries('needs_review')">Show Needs Review</button>
+        <button onclick="filterEntries('all')">Show All</button>
+    </div>
+
+    {% for entry in entries %}
+    <div class="entry confidence-{{ 'high' if entry.confidence < 0.5 else 'medium' if entry.confidence < 0.8 else 'low' }}"
+         data-id="{{ loop.index0 }}"
+         data-reviewed="{{ not entry.needs_review }}">
+        <h3>{{ entry.suggested_name }} <small>(Confidence: {{ entry.confidence|round(2) }})</small></h3>
+        <div class="original">{{ entry.original.value }}</div>
+        <div class="translation">{{ entry.translated_text }}</div>
+        <div class="actions">
+            <input type="text" class="correction-input" placeholder="Correct field name...">
+            <button class="save-btn">Save Correction</button>
+            <button class="approve-btn">Approve</button>
+        </div>
+    </div>
+    {% endfor %}
+
+    <script>
+        // Interactive functionality
+        document.querySelectorAll('.save-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const entryDiv = e.target.closest('.entry');
+                const entryId = entryDiv.dataset.id;
+                const correction = entryDiv.querySelector('.correction-input').value;
+
+                const response = await fetch('/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: parseInt(entryId), correction: correction })
+                });
+
+                if (response.ok) {
+                    entryDiv.style.opacity = '0.7';
+                }
+            });
+        });
+
+        // Search functionality
+        document.getElementById('search').addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            document.querySelectorAll('.entry').forEach(entry => {
+                const text = entry.textContent.toLowerCase();
+                entry.style.display = text.includes(searchTerm) ? 'block' : 'none';
+            });
+        });
+
+        function filterEntries(filterType) {
+            document.querySelectorAll('.entry').forEach(entry => {
+                if (filterType === 'needs_review') {
+                    entry.style.display = entry.dataset.reviewed === 'false' ? 'block' : 'none';
+                } else {
+                    entry.style.display = 'block';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
